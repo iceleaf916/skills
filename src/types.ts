@@ -31,7 +31,7 @@ export type AgentType =
   | 'iflow-cli'
   | 'junie'
   | 'kilo'
-  | 'kimi-cli'
+  | 'kimi-code-cli'
   | 'kiro-cli'
   | 'kode'
   | 'mcpjam'
