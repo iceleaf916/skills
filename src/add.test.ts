@@ -407,6 +407,25 @@ describe('parseAddOptions', () => {
     expect(result.options.list).toBe(true);
     expect(result.options.global).toBe(true);
   });
+
+  it('should parse a single --subagent value', () => {
+    const result = parseAddOptions(['source', '--subagent', 'research']);
+    expect(result.source).toEqual(['source']);
+    expect(result.options.subagent).toEqual(['research']);
+  });
+
+  it('should parse multiple --subagent values', () => {
+    const result = parseAddOptions(['source', '--subagent', 'root', 'research', 'writer']);
+    expect(result.source).toEqual(['source']);
+    expect(result.options.subagent).toEqual(['root', 'research', 'writer']);
+  });
+
+  it('should parse --subagent alongside other flags', () => {
+    const result = parseAddOptions(['source', '--subagent', 'research', '-y']);
+    expect(result.source).toEqual(['source']);
+    expect(result.options.subagent).toEqual(['research']);
+    expect(result.options.yes).toBe(true);
+  });
 });
 
 describe('openclaw source blocking', () => {

@@ -586,9 +586,15 @@ export async function updateProjectSkills(
       console.log(`${TEXT}Updating ${safeName}...${RESET}`);
       const installUrl = formatSourceInput(skill.entry.source, skill.entry.ref);
 
+      // Preserve Eve subagent placement recorded at install time. The lock stores
+      // '' for the root agent, which maps to the `root` keyword for `add --subagent`.
+      const subagentArgs = skill.entry.subagents?.length
+        ? ['--subagent', ...skill.entry.subagents.map((s) => (s === '' ? 'root' : s))]
+        : [];
+
       const result = spawnSync(
         process.execPath,
-        [cliEntry, 'add', installUrl, '--skill', skill.name, '-y'],
+        [cliEntry, 'add', installUrl, '--skill', skill.name, ...subagentArgs, '-y'],
         {
           stdio: ['inherit', 'pipe', 'pipe'],
           encoding: 'utf-8',

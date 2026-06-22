@@ -17,7 +17,13 @@ import { join, basename, normalize, resolve, sep, relative, dirname, extname } f
 import { homedir, platform } from 'os';
 import type { Skill, AgentType, RemoteSkill } from './types.ts';
 import type { WellKnownSkill } from './providers/wellknown.ts';
-import { agents, detectInstalledAgents, isUniversalAgent } from './agents.ts';
+import {
+  agents,
+  detectInstalledAgents,
+  isUniversalAgent,
+  getEveSubagents,
+  EVE_SUBAGENTS_DIR,
+} from './agents.ts';
 import { AGENTS_DIR, SKILLS_SUBDIR } from './constants.ts';
 import { parseFrontmatter } from './frontmatter.ts';
 import { parseSkillMd } from './skills.ts';
@@ -94,13 +100,37 @@ export function getCanonicalSkillsDir(global: boolean, cwd?: string): string {
 }
 
 /**
+ * Resolve the skills directory for a specific Eve subagent, relative to the
+ * project root: `agent/subagents/<name>/skills`. The subagent name is
+ * sanitized to prevent directory traversal when it originates from user input.
+ */
+export function getEveSubagentSkillsDir(subagent: string, cwd?: string): string {
+  const baseDir = cwd || process.cwd();
+  return join(baseDir, EVE_SUBAGENTS_DIR, sanitizeName(subagent), 'skills');
+}
+
+/**
  * Gets the base directory for an agent's skills, respecting universal agents.
  * Universal agents always use the canonical directory, which prevents
  * redundant symlinks and double-listing of skills.
+ *
+ * For Eve, an optional `eveSubagent` targets a subagent's skills directory
+ * (`agent/subagents/<name>/skills`) instead of the root agent's `agent/skills`.
  */
-export function getAgentBaseDir(agentType: AgentType, global: boolean, cwd?: string): string {
+export function getAgentBaseDir(
+  agentType: AgentType,
+  global: boolean,
+  cwd?: string,
+  eveSubagent?: string
+): string {
   if (isUniversalAgent(agentType)) {
     return getCanonicalSkillsDir(global, cwd);
+  }
+
+  // Eve subagents are inherently project-scoped — they live under the project's
+  // agent/ directory, so the `global` flag does not apply here.
+  if (agentType === 'eve' && eveSubagent) {
+    return getEveSubagentSkillsDir(eveSubagent, cwd);
   }
 
   const agent = agents[agentType];
@@ -234,11 +264,12 @@ async function createSymlink(target: string, linkPath: string): Promise<boolean>
 export async function installSkillForAgent(
   skill: Skill,
   agentType: AgentType,
-  options: { global?: boolean; cwd?: string; mode?: InstallMode } = {}
+  options: { global?: boolean; cwd?: string; mode?: InstallMode; eveSubagent?: string } = {}
 ): Promise<InstallResult> {
   const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
+  const eveSubagent = options.eveSubagent;
 
   // Check if agent supports global installation
   if (isGlobal && agent.globalSkillsDir === undefined) {
@@ -259,12 +290,12 @@ export async function installSkillForAgent(
   // Canonical location: .agents/skills/<skill-name>
   const canonicalBase =
     agentType === 'eve' && installMode === 'symlink'
-      ? getAgentBaseDir(agentType, isGlobal, cwd)
+      ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent)
       : getCanonicalSkillsDir(isGlobal, cwd);
   const canonicalDir = join(canonicalBase, skillName);
 
   // Agent-specific location (for symlink)
-  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd);
+  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
   const agentDir = join(agentBase, skillName);
 
   // Validate paths
@@ -498,7 +529,7 @@ function getEveFlatSkillMarkdown(files: Array<{ path: string; contents: string }
 export async function isSkillInstalled(
   skillName: string,
   agentType: AgentType,
-  options: { global?: boolean; cwd?: string } = {}
+  options: { global?: boolean; cwd?: string; eveSubagent?: string } = {}
 ): Promise<boolean> {
   const agent = agents[agentType];
   const sanitized = sanitizeName(skillName);
@@ -510,7 +541,9 @@ export async function isSkillInstalled(
 
   const targetBase = options.global
     ? agent.globalSkillsDir!
-    : join(options.cwd || process.cwd(), agent.skillsDir);
+    : agentType === 'eve' && options.eveSubagent
+      ? getEveSubagentSkillsDir(options.eveSubagent, options.cwd)
+      : join(options.cwd || process.cwd(), agent.skillsDir);
 
   const skillDir = join(targetBase, sanitized);
 
@@ -529,13 +562,18 @@ export async function isSkillInstalled(
 export function getInstallPath(
   skillName: string,
   agentType: AgentType,
-  options: { global?: boolean; cwd?: string } = {}
+  options: { global?: boolean; cwd?: string; eveSubagent?: string } = {}
 ): string {
   const agent = agents[agentType];
   const cwd = options.cwd || process.cwd();
   const sanitized = sanitizeName(skillName);
 
-  const targetBase = getAgentBaseDir(agentType, options.global ?? false, options.cwd);
+  const targetBase = getAgentBaseDir(
+    agentType,
+    options.global ?? false,
+    options.cwd,
+    options.eveSubagent
+  );
   const installPath = join(targetBase, sanitized);
 
   if (!isPathSafe(targetBase, installPath)) {
@@ -550,12 +588,12 @@ export function getInstallPath(
  */
 export function getCanonicalPath(
   skillName: string,
-  options: { global?: boolean; cwd?: string; agent?: AgentType } = {}
+  options: { global?: boolean; cwd?: string; agent?: AgentType; eveSubagent?: string } = {}
 ): string {
   const sanitized = sanitizeName(skillName);
   const canonicalBase =
     options.agent === 'eve'
-      ? getAgentBaseDir('eve', options.global ?? false, options.cwd)
+      ? getAgentBaseDir('eve', options.global ?? false, options.cwd, options.eveSubagent)
       : getCanonicalSkillsDir(options.global ?? false, options.cwd);
   const canonicalPath = join(canonicalBase, sanitized);
 
@@ -575,12 +613,13 @@ export function getCanonicalPath(
 export async function installRemoteSkillForAgent(
   skill: RemoteSkill,
   agentType: AgentType,
-  options: { global?: boolean; cwd?: string; mode?: InstallMode } = {}
+  options: { global?: boolean; cwd?: string; mode?: InstallMode; eveSubagent?: string } = {}
 ): Promise<InstallResult> {
   const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
   const installMode = options.mode ?? 'symlink';
+  const eveSubagent = options.eveSubagent;
 
   // Check if agent supports global installation
   if (isGlobal && agent.globalSkillsDir === undefined) {
@@ -598,12 +637,12 @@ export async function installRemoteSkillForAgent(
   // Canonical location: .agents/skills/<skill-name>
   const canonicalBase =
     agentType === 'eve' && installMode === 'symlink'
-      ? getAgentBaseDir(agentType, isGlobal, cwd)
+      ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent)
       : getCanonicalSkillsDir(isGlobal, cwd);
   const canonicalDir = join(canonicalBase, skillName);
 
   // Agent-specific location (for symlink)
-  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd);
+  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
   const agentDir = join(agentBase, skillName);
 
   // Validate paths
@@ -715,12 +754,13 @@ export async function installRemoteSkillForAgent(
 export async function installWellKnownSkillForAgent(
   skill: WellKnownSkill,
   agentType: AgentType,
-  options: { global?: boolean; cwd?: string; mode?: InstallMode } = {}
+  options: { global?: boolean; cwd?: string; mode?: InstallMode; eveSubagent?: string } = {}
 ): Promise<InstallResult> {
   const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
   const installMode = options.mode ?? 'symlink';
+  const eveSubagent = options.eveSubagent;
 
   // Check if agent supports global installation
   if (isGlobal && agent.globalSkillsDir === undefined) {
@@ -738,12 +778,12 @@ export async function installWellKnownSkillForAgent(
   // Canonical location: .agents/skills/<skill-name>
   const canonicalBase =
     agentType === 'eve' && installMode === 'symlink'
-      ? getAgentBaseDir(agentType, isGlobal, cwd)
+      ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent)
       : getCanonicalSkillsDir(isGlobal, cwd);
   const canonicalDir = join(canonicalBase, skillName);
 
   // Agent-specific location (for symlink)
-  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd);
+  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
   const agentDir = join(agentBase, skillName);
 
   // Validate paths
@@ -860,12 +900,13 @@ export async function installWellKnownSkillForAgent(
 export async function installBlobSkillForAgent(
   skill: { installName: string; files: Array<{ path: string; contents: string }> },
   agentType: AgentType,
-  options: { global?: boolean; cwd?: string; mode?: InstallMode } = {}
+  options: { global?: boolean; cwd?: string; mode?: InstallMode; eveSubagent?: string } = {}
 ): Promise<InstallResult> {
   const agent = agents[agentType];
   const isGlobal = options.global ?? false;
   const cwd = options.cwd || process.cwd();
   const installMode = options.mode ?? 'symlink';
+  const eveSubagent = options.eveSubagent;
 
   if (isGlobal && agent.globalSkillsDir === undefined) {
     return {
@@ -877,7 +918,7 @@ export async function installBlobSkillForAgent(
   }
 
   const skillName = sanitizeName(skill.installName);
-  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd);
+  const agentBase = getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent);
 
   if (agentType === 'eve' && !isEvePackagedSkill(skill.files)) {
     const flatSkillPath = join(agentBase, toEveFlatSkillFileName(skill.installName));
@@ -907,7 +948,7 @@ export async function installBlobSkillForAgent(
 
   const canonicalBase =
     agentType === 'eve' && installMode === 'symlink'
-      ? getAgentBaseDir(agentType, isGlobal, cwd)
+      ? getAgentBaseDir(agentType, isGlobal, cwd, eveSubagent)
       : getCanonicalSkillsDir(isGlobal, cwd);
   const canonicalDir = join(canonicalBase, skillName);
   const agentDir = join(agentBase, skillName);
@@ -1089,6 +1130,17 @@ export async function listInstalledSkills(
       // Avoid duplicate paths
       if (!scopes.some((s) => s.path === agentDir && s.global === isGlobal)) {
         scopes.push({ global: isGlobal, path: agentDir, agentType });
+      }
+
+      // Eve subagents keep their skills under agent/subagents/<name>/skills.
+      // These are project-scoped, so only scan them for the project scope.
+      if (agentType === 'eve' && !isGlobal) {
+        for (const subagent of getEveSubagents(cwd)) {
+          const subagentDir = getEveSubagentSkillsDir(subagent, cwd);
+          if (!scopes.some((s) => s.path === subagentDir && s.global === isGlobal)) {
+            scopes.push({ global: isGlobal, path: subagentDir, agentType });
+          }
+        }
       }
     }
 

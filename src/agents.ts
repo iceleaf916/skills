@@ -1,6 +1,6 @@
 import { homedir } from 'os';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { xdgConfig } from 'xdg-basedir';
 import type { AgentConfig, AgentType } from './types.ts';
 
@@ -727,6 +727,36 @@ export async function detectInstalledAgents(): Promise<AgentType[]> {
 
 export function getAgentConfig(type: AgentType): AgentConfig {
   return agents[type];
+}
+
+/**
+ * Directory (relative to an Eve project root) that holds subagents.
+ * Each subagent owns its own skills at `agent/subagents/<name>/skills`,
+ * mirroring the root agent's `agent/skills`.
+ */
+export const EVE_SUBAGENTS_DIR = join('agent', 'subagents');
+
+/**
+ * Discover the names of Eve subagents in a project.
+ *
+ * Eve supports subagents that each have their own skills directory at
+ * `agent/subagents/<name>/skills`. This returns the `<name>` of every
+ * subagent directory found under `agent/subagents/`, sorted alphabetically.
+ * Returns an empty list when the directory doesn't exist or can't be read.
+ */
+export function getEveSubagents(cwd: string = process.cwd()): string[] {
+  const dir = join(cwd, EVE_SUBAGENTS_DIR);
+  if (!existsSync(dir)) {
+    return [];
+  }
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 /**
