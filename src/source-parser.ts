@@ -281,6 +281,45 @@ export function parseSource(input: string): ParsedSource {
     );
   }
 
+  // UnionTech SkillHub shorthand: skillhub:skill-slug
+  const skillHubPrefixMatch = input.match(/^skillhub:(.+)$/);
+  if (skillHubPrefixMatch) {
+    return {
+      type: 'skillhub',
+      url: 'https://skillhub.uniontech.com',
+      skillFilter: decodeFragmentValue(skillHubPrefixMatch[1]!),
+    };
+  }
+
+  // UnionTech SkillHub URLs. The add flow understands both the site root with
+  // --skill filters and direct detail/download URLs for one skill.
+  try {
+    const parsedUrl = new URL(input);
+    if (parsedUrl.hostname === 'skillhub.uniontech.com') {
+      const parts = parsedUrl.pathname.split('/').filter(Boolean);
+      const apiSkillIndex = parts[0] === 'api' && parts[1] === 'v1';
+      let skillFilter: string | undefined;
+
+      if (apiSkillIndex && parts[2] === 'download' && parts[3]) {
+        skillFilter = parts[3];
+      } else if (apiSkillIndex && parts[2] === 'skills' && parts[3]) {
+        skillFilter = parts[3];
+      } else if (parts[0] === 'skills' && parts[1]) {
+        skillFilter = parts[1];
+      } else if (parts.length === 1 && parts[0] !== 'api') {
+        skillFilter = parts[0];
+      }
+
+      return {
+        type: 'skillhub',
+        url: `${parsedUrl.protocol}//${parsedUrl.host}`,
+        ...(skillFilter ? { skillFilter: decodeFragmentValue(skillFilter) } : {}),
+      };
+    }
+  } catch {
+    // Continue with regular source parsing.
+  }
+
   // GitHub URL with path: https://github.com/owner/repo/tree/branch/path/to/skill
   const githubTreeWithPathMatch = input.match(/github\.com\/([^/]+)\/([^/]+)\/tree\/([^/]+)\/(.+)/);
   if (githubTreeWithPathMatch) {

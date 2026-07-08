@@ -12,3 +12,4 @@ export {
   type WellKnownSkillEntry,
   type WellKnownSkill,
 } from './wellknown.ts';
+export { SkillHubProvider, skillHubProvider, type SkillHubSummary } from './skillhub.ts';
