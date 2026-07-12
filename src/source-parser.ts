@@ -291,8 +291,11 @@ export function parseSource(input: string): ParsedSource {
     };
   }
 
-  // UnionTech SkillHub URLs. The add flow understands both the site root with
-  // --skill filters and direct detail/download URLs for one skill.
+  // UnionTech SkillHub URLs. The add flow understands the site root (with
+  // `--skill` filters), the `/<slug>` and `/skills/<slug>` detail pages, the
+  // `/api/v1/...` API URLs, and the canonical web detail URL
+  // `/space/global/<slug>`. Non-global namespace prefixes are intentionally
+  // unrecognized so we don't pretend a slug from the wrong namespace exists.
   try {
     const parsedUrl = new URL(input);
     if (parsedUrl.hostname === 'skillhub.uniontech.com') {
@@ -306,6 +309,8 @@ export function parseSource(input: string): ParsedSource {
         skillFilter = parts[3];
       } else if (parts[0] === 'skills' && parts[1]) {
         skillFilter = parts[1];
+      } else if (parts[0] === 'space' && parts[1] === 'global' && parts[2]) {
+        skillFilter = parts[2];
       } else if (parts.length === 1 && parts[0] !== 'api') {
         skillFilter = parts[0];
       }

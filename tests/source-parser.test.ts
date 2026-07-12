@@ -87,6 +87,27 @@ describe('parseSource', () => {
       expect(result.skillFilter).toBe('deepin-code-aicheck');
     });
 
+    it('parses SkillHub web detail URL with namespace prefix', () => {
+      const result = parseSource('https://skillhub.uniontech.com/space/global/udcp-auto-debug');
+      expect(result.type).toBe('skillhub');
+      expect(result.url).toBe('https://skillhub.uniontech.com');
+      expect(result.skillFilter).toBe('udcp-auto-debug');
+    });
+
+    it('does not extract a skill from non-global namespace URLs', () => {
+      const result = parseSource('https://skillhub.uniontech.com/space/private/udcp-auto-debug');
+      expect(result.type).toBe('skillhub');
+      expect(result.url).toBe('https://skillhub.uniontech.com');
+      expect(result.skillFilter).toBeUndefined();
+    });
+
+    it('falls back to listing all skills when given a bare API path', () => {
+      const result = parseSource('https://skillhub.uniontech.com/api/v1');
+      expect(result.type).toBe('skillhub');
+      expect(result.url).toBe('https://skillhub.uniontech.com');
+      expect(result.skillFilter).toBeUndefined();
+    });
+
     it('parses SkillHub shorthand', () => {
       const result = parseSource('skillhub:qt-deletelater');
       expect(result.type).toBe('skillhub');
