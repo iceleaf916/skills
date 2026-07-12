@@ -59,7 +59,7 @@ import {
   type PartnerAudit,
 } from './telemetry.ts';
 import { detectAgent, getAgentType } from './detect-agent.ts';
-import { wellKnownProvider, type WellKnownSkill } from './providers/index.ts';
+import { skillHubProvider, wellKnownProvider, type WellKnownSkill } from './providers/index.ts';
 import {
   addSkillToLock,
   fetchSkillFolderHash,
@@ -1005,6 +1005,400 @@ async function handleWellKnownSkills(
   await promptForFindSkills(options, targetAgents);
 }
 
+async function handleSkillHubSkills(
+  skillFilter: string | undefined,
+  options: AddOptions,
+  spinner: ReturnType<typeof p.spinner>
+): Promise<void> {
+  const requestedSkills = [...(options.skill ?? [])];
+  if (skillFilter && !requestedSkills.includes(skillFilter)) {
+    requestedSkills.push(skillFilter);
+  }
+
+  spinner.start('Discovering skills from UnionTech SkillHub...');
+
+  let summaries = await skillHubProvider.listSkills();
+  const directSkill =
+    skillFilter && !requestedSkills.includes('*')
+      ? await skillHubProvider.getSkill(skillFilter)
+      : null;
+  if (directSkill && !summaries.some((s) => s.slug === directSkill.slug)) {
+    summaries = [directSkill, ...summaries];
+  }
+
+  if (summaries.length === 0) {
+    spinner.stop(pc.red('No skills found'));
+    p.outro(pc.red('No skills found on UnionTech SkillHub.'));
+    process.exit(1);
+  }
+
+  spinner.stop(`Found ${pc.green(summaries.length)} skill${summaries.length > 1 ? 's' : ''}`);
+
+  if (options.list) {
+    console.log();
+    p.log.step(pc.bold('Available UnionTech SkillHub Skills'));
+    for (const skill of summaries) {
+      p.log.message(`  ${pc.cyan(skill.slug)}`);
+      p.log.message(`    ${pc.dim(skill.summary)}`);
+    }
+    console.log();
+    p.outro('Use --skill <name> to install specific skills');
+    process.exit(0);
+  }
+
+  let selectedSummaries: typeof summaries;
+
+  if (requestedSkills.includes('*')) {
+    selectedSummaries = summaries;
+    p.log.info(`Installing all ${summaries.length} skills`);
+  } else if (requestedSkills.length > 0) {
+    const selected: typeof summaries = [];
+    const missing: string[] = [];
+
+    for (const requested of requestedSkills) {
+      const lower = requested.toLowerCase();
+      const match =
+        summaries.find(
+          (skill) => skill.slug.toLowerCase() === lower || skill.displayName.toLowerCase() === lower
+        ) ?? (await skillHubProvider.getSkill(requested));
+      if (match) {
+        selected.push(match);
+      } else {
+        missing.push(requested);
+      }
+    }
+
+    if (missing.length > 0) {
+      p.log.error(`No matching SkillHub skills found for: ${missing.join(', ')}`);
+      p.log.info('Available skills include:');
+      for (const skill of summaries.slice(0, 20)) {
+        p.log.message(`  - ${skill.slug}`);
+      }
+      process.exit(1);
+    }
+
+    selectedSummaries = Array.from(new Map(selected.map((skill) => [skill.slug, skill])).values());
+    p.log.info(
+      `Selected ${selectedSummaries.length} skill${selectedSummaries.length !== 1 ? 's' : ''}: ${selectedSummaries.map((s) => pc.cyan(s.slug)).join(', ')}`
+    );
+  } else if (summaries.length === 1) {
+    selectedSummaries = summaries;
+    p.log.info(`Skill: ${pc.cyan(summaries[0]!.slug)}`);
+    p.log.message(pc.dim(summaries[0]!.summary));
+  } else if (options.yes) {
+    selectedSummaries = summaries;
+    p.log.info(`Installing all ${summaries.length} skills`);
+  } else {
+    const selected = await multiselect({
+      message: 'Select SkillHub skills to install',
+      options: summaries.map((skill) => ({
+        value: skill,
+        label: skill.slug,
+        hint: skill.summary.length > 60 ? skill.summary.slice(0, 57) + '...' : skill.summary,
+      })),
+      required: true,
+    });
+
+    if (p.isCancel(selected)) {
+      p.cancel('Installation cancelled');
+      process.exit(0);
+    }
+
+    selectedSummaries = selected as typeof summaries;
+  }
+
+  spinner.start('Downloading skills from UnionTech SkillHub...');
+  const fetched = await Promise.all(
+    selectedSummaries.map(async (summary) => ({
+      summary,
+      skill: await skillHubProvider.fetchSkill(summary.slug, summary),
+    }))
+  );
+  const selectedSkills = fetched
+    .map((result) => result.skill)
+    .filter((skill): skill is WellKnownSkill => skill !== null);
+
+  if (selectedSkills.length !== selectedSummaries.length) {
+    const failed = fetched
+      .filter((result) => result.skill === null)
+      .map((result) => result.summary.slug);
+    spinner.stop(pc.red('Download failed'));
+    p.outro(
+      pc.red(
+        `Failed to download SkillHub skill${failed.length !== 1 ? 's' : ''}: ${failed.join(', ')}`
+      )
+    );
+    process.exit(1);
+  }
+
+  spinner.stop(
+    `Downloaded ${pc.green(selectedSkills.length)} skill${selectedSkills.length > 1 ? 's' : ''}`
+  );
+
+  let targetAgents: AgentType[];
+  const validAgents = Object.keys(agents);
+
+  if (options.agent?.includes('*')) {
+    targetAgents = validAgents as AgentType[];
+    p.log.info(`Installing to all ${targetAgents.length} agents`);
+  } else if (options.agent && options.agent.length > 0) {
+    const invalidAgents = options.agent.filter((a) => !validAgents.includes(a));
+    if (invalidAgents.length > 0) {
+      p.log.error(`Invalid agents: ${invalidAgents.join(', ')}`);
+      p.log.info(`Valid agents: ${validAgents.join(', ')}`);
+      process.exit(1);
+    }
+    targetAgents = options.agent as AgentType[];
+  } else {
+    spinner.start('Loading agents...');
+    const installedAgents = await detectInstalledAgents();
+    const totalAgents = Object.keys(agents).length;
+    spinner.stop(`${totalAgents} agents`);
+
+    if (installedAgents.length === 0) {
+      if (options.yes) {
+        targetAgents = validAgents as AgentType[];
+        p.log.info('Installing to all agents');
+      } else {
+        const selected = await promptForAgents(
+          'Which agents do you want to install to?',
+          Object.entries(agents).map(([key, config]) => ({
+            value: key as AgentType,
+            label: config.displayName,
+          }))
+        );
+        if (p.isCancel(selected)) {
+          p.cancel('Installation cancelled');
+          process.exit(0);
+        }
+        targetAgents = selected as AgentType[];
+      }
+    } else if (installedAgents.length === 1 || options.yes) {
+      targetAgents = ensureUniversalAgents(installedAgents);
+      p.log.info(
+        `Installing to: ${installedAgents.map((a) => pc.cyan(agents[a].displayName)).join(', ')}`
+      );
+    } else {
+      const selected = await selectAgentsInteractive({ global: options.global });
+      if (p.isCancel(selected)) {
+        p.cancel('Installation cancelled');
+        process.exit(0);
+      }
+      targetAgents = selected as AgentType[];
+    }
+  }
+
+  let installGlobally = options.global ?? false;
+  const supportsGlobal = targetAgents.some((a) => agents[a].globalSkillsDir !== undefined);
+  if (options.global === undefined && !options.yes && supportsGlobal) {
+    const scope = await p.select({
+      message: 'Installation scope',
+      options: [
+        { value: false, label: 'Project', hint: 'Install in current directory' },
+        { value: true, label: 'Global', hint: 'Install in home directory' },
+      ],
+    });
+    if (p.isCancel(scope)) {
+      p.cancel('Installation cancelled');
+      process.exit(0);
+    }
+    installGlobally = scope as boolean;
+  }
+
+  let installMode: InstallMode = options.copy ? 'copy' : 'symlink';
+  const uniqueDirs = new Set(targetAgents.map((a) => agents[a].skillsDir));
+  if (!options.copy && !options.yes && uniqueDirs.size > 1) {
+    const modeChoice = await p.select({
+      message: 'Installation method',
+      options: [
+        { value: 'symlink', label: 'Symlink (Recommended)', hint: 'Single source of truth' },
+        { value: 'copy', label: 'Copy to all agents', hint: 'Independent copies for each agent' },
+      ],
+    });
+    if (p.isCancel(modeChoice)) {
+      p.cancel('Installation cancelled');
+      process.exit(0);
+    }
+    installMode = modeChoice as InstallMode;
+  } else if (uniqueDirs.size <= 1) {
+    installMode = 'copy';
+  }
+
+  const cwd = process.cwd();
+  const summaryLines: string[] = [];
+  const overwriteChecks = await Promise.all(
+    selectedSkills.flatMap((skill) =>
+      targetAgents.map(async (agent) => ({
+        skillName: skill.installName,
+        agent,
+        installed: await isSkillInstalled(skill.installName, agent, { global: installGlobally }),
+      }))
+    )
+  );
+  const overwriteStatus = new Map<string, Map<string, boolean>>();
+  for (const { skillName, agent, installed } of overwriteChecks) {
+    if (!overwriteStatus.has(skillName)) overwriteStatus.set(skillName, new Map());
+    overwriteStatus.get(skillName)!.set(agent, installed);
+  }
+
+  for (const skill of selectedSkills) {
+    if (summaryLines.length > 0) summaryLines.push('');
+    const canonicalPath = getCanonicalPath(skill.installName, { global: installGlobally });
+    summaryLines.push(`${pc.cyan(shortenPath(canonicalPath, cwd))}`);
+    summaryLines.push(...buildAgentSummaryLines(targetAgents, installMode));
+    if (skill.files.size > 1) {
+      summaryLines.push(`  ${pc.dim('files:')} ${skill.files.size}`);
+    }
+
+    const overwriteAgents = targetAgents
+      .filter((agent) => overwriteStatus.get(skill.installName)?.get(agent))
+      .map((agent) => agents[agent].displayName);
+    if (overwriteAgents.length > 0) {
+      summaryLines.push(`  ${pc.yellow('overwrites:')} ${formatList(overwriteAgents)}`);
+    }
+  }
+
+  console.log();
+  p.note(summaryLines.join('\n'), 'Installation Summary');
+
+  if (!options.yes) {
+    const confirmed = await p.confirm({ message: 'Proceed with installation?' });
+    if (p.isCancel(confirmed) || !confirmed) {
+      p.cancel('Installation cancelled');
+      process.exit(0);
+    }
+  }
+
+  spinner.start('Installing skills...');
+  const results: {
+    skill: string;
+    agent: string;
+    success: boolean;
+    path: string;
+    canonicalPath?: string;
+    mode: InstallMode;
+    symlinkFailed?: boolean;
+    error?: string;
+  }[] = [];
+
+  for (const skill of selectedSkills) {
+    for (const agent of targetAgents) {
+      const result = await installWellKnownSkillForAgent(skill, agent, {
+        global: installGlobally,
+        mode: installMode,
+      });
+      results.push({ skill: skill.installName, agent: agents[agent].displayName, ...result });
+    }
+  }
+
+  spinner.stop('Installation complete');
+
+  const successful = results.filter((r) => r.success);
+  const failed = results.filter((r) => !r.success);
+  const sourceIdentifier = skillHubProvider.getSourceIdentifier();
+
+  if (successful.length > 0) {
+    track({
+      event: 'install',
+      source: sourceIdentifier,
+      skills: selectedSkills.map((s) => s.installName).join(','),
+      agents: targetAgents.join(','),
+      ...(installGlobally && { global: '1' }),
+      skillFiles: JSON.stringify(
+        Object.fromEntries(selectedSkills.map((skill) => [skill.installName, skill.sourceUrl]))
+      ),
+      sourceType: 'skillhub',
+    });
+  }
+
+  if (successful.length > 0 && installGlobally) {
+    const successfulSkillNames = new Set(successful.map((r) => r.skill));
+    for (const skill of selectedSkills) {
+      if (!successfulSkillNames.has(skill.installName)) continue;
+      try {
+        await addSkillToLock(skill.installName, {
+          source: sourceIdentifier,
+          sourceType: 'skillhub',
+          sourceUrl: skill.sourceUrl,
+          skillFolderHash: '',
+        });
+      } catch {
+        // Don't fail installation if lock file update fails.
+      }
+    }
+  }
+
+  if (successful.length > 0 && !installGlobally) {
+    const successfulSkillNames = new Set(successful.map((r) => r.skill));
+    for (const skill of selectedSkills) {
+      if (!successfulSkillNames.has(skill.installName)) continue;
+      try {
+        const matchingResult = successful.find((r) => r.skill === skill.installName);
+        const installDir = matchingResult?.canonicalPath || matchingResult?.path;
+        if (installDir) {
+          await addSkillToLocalLock(
+            skill.installName,
+            {
+              source: sourceIdentifier,
+              sourceType: 'skillhub',
+              sourceUrl: skill.sourceUrl,
+              computedHash: await computeSkillFolderHash(installDir),
+            },
+            cwd
+          );
+        }
+      } catch {
+        // Don't fail installation if lock file update fails.
+      }
+    }
+  }
+
+  if (successful.length > 0) {
+    const bySkill = new Map<string, typeof results>();
+    for (const result of successful) {
+      const skillResults = bySkill.get(result.skill) || [];
+      skillResults.push(result);
+      bySkill.set(result.skill, skillResults);
+    }
+
+    const resultLines: string[] = [];
+    for (const [skillName, skillResults] of bySkill) {
+      const firstResult = skillResults[0]!;
+      if (firstResult.mode === 'copy') {
+        resultLines.push(`${pc.green('✓')} ${skillName} ${pc.dim('(copied)')}`);
+        for (const result of skillResults) {
+          resultLines.push(`  ${pc.dim('→')} ${shortenPath(result.path, cwd)}`);
+        }
+      } else if (firstResult.canonicalPath) {
+        resultLines.push(`${pc.green('✓')} ${shortenPath(firstResult.canonicalPath, cwd)}`);
+        resultLines.push(...buildResultLines(skillResults, targetAgents));
+      } else {
+        resultLines.push(`${pc.green('✓')} ${skillName}`);
+      }
+    }
+
+    p.note(
+      resultLines.join('\n'),
+      pc.green(`Installed ${bySkill.size} skill${bySkill.size !== 1 ? 's' : ''}`)
+    );
+  }
+
+  if (failed.length > 0) {
+    console.log();
+    p.log.error(pc.red(`Failed to install ${failed.length}`));
+    for (const result of failed) {
+      p.log.message(`  ${pc.red('✗')} ${result.skill} → ${result.agent}: ${pc.dim(result.error)}`);
+    }
+  }
+
+  console.log();
+  p.outro(
+    pc.green('Done!') + pc.dim('  Review skills before use; they run with full agent permissions.')
+  );
+
+  await promptForFindSkills(options, targetAgents);
+}
+
 export async function runAdd(args: string[], options: AddOptions = {}): Promise<void> {
   const source = args[0];
   let installTipShown = false;
@@ -1088,6 +1482,12 @@ export async function runAdd(args: string[], options: AddOptions = {}): Promise<
       if (!ownerRepo) return Promise.resolve(null);
       return isRepoPrivate(ownerRepo.owner, ownerRepo.repo).catch(() => null);
     })();
+
+    // Handle UnionTech SkillHub API-backed skills.
+    if (parsed.type === 'skillhub') {
+      await handleSkillHubSkills(parsed.skillFilter, options, spinner);
+      return;
+    }
 
     // Handle well-known skills from arbitrary URLs
     if (parsed.type === 'well-known') {

@@ -70,6 +70,31 @@ describe('parseSource', () => {
     });
   });
 
+  describe('UnionTech SkillHub tests', () => {
+    it('parses SkillHub root URL', () => {
+      const result = parseSource('https://skillhub.uniontech.com/');
+      expect(result.type).toBe('skillhub');
+      expect(result.url).toBe('https://skillhub.uniontech.com');
+      expect(result.skillFilter).toBeUndefined();
+    });
+
+    it('parses SkillHub download URL as a single skill', () => {
+      const result = parseSource(
+        'https://skillhub.uniontech.com/api/v1/download/deepin-code-aicheck'
+      );
+      expect(result.type).toBe('skillhub');
+      expect(result.url).toBe('https://skillhub.uniontech.com');
+      expect(result.skillFilter).toBe('deepin-code-aicheck');
+    });
+
+    it('parses SkillHub shorthand', () => {
+      const result = parseSource('skillhub:qt-deletelater');
+      expect(result.type).toBe('skillhub');
+      expect(result.url).toBe('https://skillhub.uniontech.com');
+      expect(result.skillFilter).toBe('qt-deletelater');
+    });
+  });
+
   describe('GitLab URL tests', () => {
     it('GitLab URL - basic repo', () => {
       const result = parseSource('https://gitlab.com/owner/repo');
