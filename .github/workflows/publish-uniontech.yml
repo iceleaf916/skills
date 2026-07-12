@@ -1,0 +1,81 @@
+name: Publish UnionTech package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "npm dist-tag"
+        required: true
+        default: "latest"
+        type: choice
+        options:
+          - latest
+          - next
+          - beta
+      dry_run:
+        description: "Build and pack without publishing"
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "uniontech-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Type check
+        run: pnpm type-check
+
+      - name: Test
+        run: pnpm test
+        env:
+          AI_AGENT: ""
+          CODEX_CI: ""
+          CODEX_SANDBOX: ""
+          CODEX_THREAD_ID: ""
+          CLAUDE_CODE: ""
+          CLAUDECODE: ""
+          CLAUDE_CODE_IS_COWORK: ""
+          CURSOR_AGENT: ""
+          GEMINI_CLI: ""
+          OPENCODE_CLIENT: ""
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pack dry run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        run: npm publish --provenance --access public --tag "${NPM_DIST_TAG}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
