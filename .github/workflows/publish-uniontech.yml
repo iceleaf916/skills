@@ -39,9 +39,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: lts/*
-          cache: pnpm
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Use latest npm
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -77,5 +81,4 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         run: npm publish --provenance --access public --tag "${NPM_DIST_TAG}"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
